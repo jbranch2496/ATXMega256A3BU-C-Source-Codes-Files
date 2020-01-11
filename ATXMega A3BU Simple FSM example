@@ -1,0 +1,175 @@
+/*
+*Purpose: This code illustrates an example of how to create a finite 
+state machine using the ATXMega A3BU. 
+* Obj: 4 digit combinational state machine w/6 states;
+S1, S2, S3, S4, OPEN, and INVALID (and Reset)
+* Instructions: Put in states when LED1 is on and release buttons during the time right after LED1 goes off. 
+Must reset first before putting in value. If no input is selected during transitions the switch case goes
+back to the default in which a reset must be performed again before putting in any push button combinations.
+- SW2 -> MSB, - SW0 -> LSB
+- S1 = 001, - S2 = 010, - S3 = 011, - SW4 = 100, - RESET = 101
+- LED0 off -> INVALID, - LED0 on -> OPEN
+- LED1 on -> in Read function, - LED1 off -> coming out of Read function 
+
+* Created: 10/31/2019 10:22:39 AM
+* Author : Johnathan Branch
+*/ 
+
+// Libraries and included headers
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <util/delay.h>
+
+// Global Variable Declarations
+uint16_t SW0_input = 0;		 // input from SW0
+uint16_t SW1_input = 0;		 // input from SW1
+uint16_t SW2_input = 0;		 // input from SW2
+uint8_t begin_read_flag = 0; // flag for read function debug
+double counter = 0;			// loop counter used in the read function
+double counter_max = 60000; // max value loop counter variable will count to
+uint8_t state = 0;			// will hold the current state of the FST(either 0 for invalid, 1, 2, 3, 4 , 5 for open)
+uint8_t state_flag = 1;		// flag for the StateLogic function
+uint8_t latch = 0;			// used to latch the output of the LED0 once combination has been put in
+uint8_t mode = 0;			// used to change the mode of the switch case used in the StateLogic function
+
+//Global Volatiles
+volatile uint8_t timer0_trigger_flag = 0;	// flag to interrupt debug
+volatile uint8_t timer0_counter = 0;		// counter for seeing how many times the timer0 interrupt gets triggered
+
+//State Definitions
+#define INVALID 0x01 
+#define SW2_off 0x0004
+#define SW1_off 0x0002
+#define SW0_off 0x0020
+
+void ReadSwitches()
+{
+	begin_read_flag = 1; // set high when Read function is initially called
+	
+	// Do-while loop captures the switch values
+	do{
+		PORTR_OUT &= ~(0x02); // turns on LED1 to let user know when to enter combination
+		SW2_input = (PORTF_IN & 0x04); // stores the input coming from PF2
+		SW1_input = (PORTF_IN & 0x02); // stores the input coming from PF1
+		SW0_input = (PORTE_IN & 0x20); // stores the input coming from PE5
+		counter++; // increment the counter
+	}while(counter < counter_max);
+	PORTR_OUT |= 0x02; // turns off LED1 to let user know when not to enter combination
+	counter = 0; // resets the counter after the loop
+	begin_read_flag = 0; // set low at end of Read function
+}
+
+void StateLogic()
+{
+	switch(mode)
+	{
+		case 1:
+			if(SW2_input == SW2_off && SW1_input == SW1_off && SW0_input == 0)
+			{
+				state = 1; // STATE1
+				mode = 2; // set the mode for the switch case
+			}
+			else
+				{
+					state = 0; // INVALID
+					mode = 0; // need to go back to default in the switch case now
+				}
+			break;
+		case 2:
+			if(SW2_input == SW2_off && SW1_input == 0 && SW0_input == SW0_off && state != 0)
+				{
+					state = 2; // STATE2
+					mode = 3; // set the mode for the switch case
+				}
+			else
+				{
+					state = 0; // INVALID
+					mode = 0; // need to go back to default in the switch case now
+				}
+			break;
+		case 3:
+			if(SW2_input == SW2_off && SW1_input == 0 && SW0_input == 0 && state != 0)
+				{
+					state = 3; // STATE3
+					mode = 4; // set the mode for the switch case
+				}
+			else
+				{
+					state = 0; // INVALID
+					mode = 0; // need to go back to default in the switch case now
+				}
+			break;
+		case 4:
+			if(SW2_input == 0 && SW1_input == SW1_off && SW0_input == SW0_off && state != 0)
+				{
+					state = 4; // STATE4
+					latch = 1; // turn on to latch output to LED0
+				}
+			else
+				{
+					state = 0; // INVALID
+					mode = 0; // need to go back to default in the switch case now
+				}
+			break;
+		default:
+			if(SW2_input == 0 && SW1_input == SW1_off && SW0_input == 0 && state == 0)
+				{
+					state = 5; // STATE5
+					mode = 1; // set the mode for the switch case
+					latch = 0;
+				}
+			else
+				state = 0; // INVALID
+			break;	
+	}
+	state_flag = 0; // set to 0 upon exiting the function
+}
+
+void LED0Control()
+{
+	if(latch == 1)
+		PORTR_OUT &= ~(INVALID); // turns LED0 on
+	else
+		PORTR_OUT |= INVALID; // turns LED0 off
+}
+
+ISR(TCC0_OVF_vect)
+{
+	timer0_trigger_flag = 1; // set high when interrupt is initially triggered 
+	timer0_counter++; // increment the timer0 counter every time the interrupt triggers
+	timer0_trigger_flag = 0; // set low after interrupt is serviced
+}
+
+int main(void)
+{
+	// Timer TCC0 Setup
+		cli();								// this clears all interrupts & initializes
+		TCC0_PER = 0xEA60;					// set the range of the counter(50000 ticks of prescaled clock)
+		TCC0_INTCTRLA = PMIC_MEDLVLEX_bm;	// generate an interrupt when the timer overflows
+		TCC0_CTRLA = 0x01;					// set the timer prescaler
+		PMIC.CTRL = PMIC_HILVLEN_bm | PMIC_MEDLVLEN_bm | PMIC_LOLVLEN_bm;	// turn on all interrupt levels
+		sei();								// turns on all interrupts that are setup
+		
+		PORTR_DIR |= 0x03; // Enable on board LEDs
+		PORTR_OUT |= 0x03; // Turn of LEDs to start with if on 
+		PORTF_DIR &= ~(0x06); // Enable PORTF2(SW2) and PORTF1(SW1) as inputs
+		PORTE_DIR &= ~(0x20); // Enable PORTE5(SW0) as input  
+	
+	
+    /* Replace with your application code */
+    while (1) 
+    {
+		if(timer0_counter >= 225)
+			timer0_counter = 0; // resets the timer counter
+			ReadSwitches(); // calls read function when if timer0 if condition is met
+			_delay_ms(4000);
+			StateLogic(); // after returning from ReadSwitches function the program calls StateLogic function to determine next state of FST
+			LED0Control(); // after returning from the StateLogic function the program calls LED0Control function to make choice based on result of state decision 
+		}
+}
+
+
+// Debug: Code works as intended. Has been checked on by instructor. :)
