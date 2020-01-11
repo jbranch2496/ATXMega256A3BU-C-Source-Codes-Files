@@ -1,0 +1,257 @@
+/*
+ * Created: 11/18/2019 5:28:15 AM
+ * Author: Johnathan Branch
+ * Part 1 - Fuzzy Logic Classifiers(0x14 Points)
+ * Credit:Yes
+ * Purpose: This code illustrates an example of how to create a fuzzy logic 
+ * classifier defined machine using the ATXMega256 A3BU.
+ * Obj: 2 classifier(light sensor fuzzy class and accelerometer fuzzy class) based fuzzy logic controlled machine w/3 output states(A_out, B_out, C_out)
+ * Instructions: Light sensor on the board connected to PORTA will have a fuzzy logic class w/ fuzzy states "DARK", "DIM", and "BRIGHT" referred to as D,I,and B in code.
+Accelerometer will have a fuzzy logic class w/ fuzzy logic states "X TILT", "Y TILT", and "Z TILT" referred to as X,Y,and Z in code.
+
+* Note:  Fuzzy states will overlap using a linear ramp mapping of the fuzzy state values, so as D ramps down I will start to ramp up and the code should take a certain
+ratio of fuzzy state value as true. Ex: If truth value is 0.75, if D = 0.2 and I = 0.8 then the fuzzy output of the classifier should output I as the current state.
+
+State Logic 
+-----------------
+A = X' AND B	// LED1 on
+B = D*X + BZ    // LED2 on
+C = D*Y + I*Z	// LED3 on
+
+* To do:
+*/
+
+// Libraries and included headers
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <math.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <util/delay.h>
+#include <AVRXlib/AVRXClocks.h>
+
+// Global Variable Declarations
+float D = 0, I = 0, B = 0, X = 0, Y = 0, Z = 0;													// fuzzy state variables
+float pin0_norm = 0, pin4_norm = 0, pin5_norm = 0, pin7_norm = 0;								// normalized values for the ADC samples
+
+ 
+// Global Volatiles
+volatile uint16_t period = 0x1910;																// timer period for 50ms sample
+volatile uint16_t pin0_sample = 0, pin4_sample = 0, pin5_sample = 0, pin7_sample = 0;			// samples from ADC pins
+volatile int flag = 0;																			// flag for controlling ADC pin reading position
+volatile int fuzz_flag = 0;																		// flag for controlling when Fuzzification occurs
+
+
+// State Definitions
+#define STATE_A 0x01 // GREEN
+#define STATE_B 0x02 // BLUE
+#define STATE_C 0x04 // RED
+
+/*** Function Prototypes ***/
+void Timer0_init();
+void ADCA_Init();
+void Fuzzification();
+void State_Logic();
+
+
+// Timer0  ISR overflow function
+ISR(TCC0_OVF_vect)
+{
+	/*  alternate between the pins based on flag */
+	if(flag == 0)
+	{
+		ADCA_CH0_MUXCTRL = ADC_CH_MUXPOS_PIN0_gc;	// read PORTA pin 0
+		ADCA_CTRLA |= ADC_CH0START_bm;				// start the data conversion
+		flag++;									    // change x axis of accelerometer now
+	}
+	else if(flag == 1)
+	{
+		ADCA_CH0_MUXCTRL = ADC_CH_MUXPOS_PIN4_gc;	// read PORTA pin 4
+		ADCA_CTRLA |= ADC_CH0START_bm;				// start the data conversion
+		flag++;									    // change to y axis of accelerometer now
+	}
+	else if(flag == 2)
+	{
+		ADCA_CH0_MUXCTRL = ADC_CH_MUXPOS_PIN5_gc;	// read PORTA pin 5
+		ADCA_CTRLA |= ADC_CH0START_bm;				// start the data conversion
+		flag++;									    // change to z axis of accelerometer
+	}
+	else if(flag == 3)
+	{
+		ADCA_CH0_MUXCTRL = ADC_CH_MUXPOS_PIN7_gc;	// read PORTA pin 7
+		ADCA_CTRLA |= ADC_CH0START_bm;				// start the data conversion
+		flag ++;									// flag reset in the ADC_CH0_vect function once full set of ADC values obtained for all for 4 inputs
+	}
+		else if(flag ==5 )
+	{
+		fuzz_flag = 1;								// set high so main can call the Fuzzification function									
+	}else
+	;	// No-op, end of the conditional chain
+	
+} // end of Timer0 ISR
+
+ISR(ADCA_CH0_vect)
+{
+	
+	//sample = ADCA_CH0_RES;						// read the sample from the ADC
+	if (flag == 1)
+	{
+		pin0_sample = ADCA_CH0_RES;					// store the ADC sample from pin 0
+	}
+	else if(flag == 2)
+	{
+		pin4_sample = ADCA_CH0_RES;					// store the ADC sample from pin 4
+	}
+	else if(flag == 3)
+	{
+		pin5_sample = ADCA_CH0_RES;					// store the ADC sample from pin 5
+	}
+	else if(flag == 4)
+	{
+		pin7_sample = ADCA_CH0_RES;					// store the ADC sample from pin 7
+		flag++;										// necessary so the the following else condition gets called
+	}else
+	;	// No-op, end of the conditional chain
+	
+} // end of ADCA_CH0_vect overflow function
+
+
+// Function to set the fuzzy states of the classifiers after ADC readings
+void Fuzzification()
+{
+	pin0_norm = (float)pin0_sample/4096;			// normalized value(0~1.0) of the ADC sample on pin 0
+	pin4_norm = (float)pin4_sample/4096;			// normalized value(0~1.0) of the ADC sample on pin 4
+	pin5_norm = (float)pin5_sample/4096;			// normalized value(0~1.0) of the ADC sample on pin 5
+	pin7_norm = (float)pin7_sample/4096;			// normalized value(0~1.0) of the ADC sample on pin 7
+	
+	X = pin4_norm; // assign X the normalized value of the ADC reading corresponding to the positive z-axis of the accelerometer
+	Y = pin5_norm; // assign Y the normalized value of the ADC reading corresponding to the positive z-axis of the accelerometer
+	Z = pin7_norm; // assign Z the normalized value of the ADC reading corresponding to the positive z-axis of the accelerometer
+	
+	/* This is where the fuzz happens JOY! math comes in NOW!*/
+	if(pin0_norm <= 0.5) // we should be in the range of dark(D) to dim(I)
+		{
+			if(pin0_norm <= 0.35)
+			{
+				D = 1.0; // set the truth value of dark high
+				I = 0;	 // set the truth value of dim low
+				B = 0;	 // set the truth value of bright low 		
+			}
+			else if(pin0_norm >= 0.45)
+			{
+				D = 0;	 // set the truth value of dark low
+				I = 1.0; // set the truth value of dim high
+				B = 0;	 // set the truth value of bright low
+			}
+			else // this is where the fuzziness really happens on the low side
+			{
+				D = 10*(0.45 - pin0_norm); // down ramp with range of 0 to 1
+				I = 10*(pin0_norm - 0.35); // up ramp with range of 0 to 1
+			}
+		}
+		if(pin0_norm > 0.5) // we should be in the range of dim(I) to bright(B)
+		{
+			if(pin0_norm <= 0.75)
+			{
+				D = 0;	 // set the truth value of dark low
+				I = 1.0; // set the truth value of dim high
+				B = 0;	 // set the truth value of bright low
+			}
+			else if(pin0_norm >= 0.85)
+			{
+				D = 0;	 // set the truth value of dark low
+				I = 0;	 // set the truth value of dim high
+				B = 1.0; // set the truth value of bright low
+			}
+			else // this is where the fuzziness really happens on the high side
+			{
+				I = 10*(0.85 - pin0_norm); // down ramp with range of 0 to 1
+				B = 10*(pin0_norm - 0.75); // up ramp with range of 0 to 1
+			}
+		}
+	
+	
+	
+}	// end of fuzzification function
+
+// Function to determine the state fuzzy logic machine based of on the fuzzy state values
+void State_Logic()
+{
+	PORTC_OUT &= ~(0x07); // turn off LEDs at beginning of function
+	
+	// Logic to Determine value of A (GREEN)
+	if(X < 0.75 && B > 0.75)
+		PORTC_OUT |= STATE_A; // turns on LED connected to PORTC pin 0
+	
+	// Logic to Determine value of B (BLUE)
+	if( ( (D > 0.75) && (X > 0.75) ) || ( (B > 0.75) && (Z > 0.75) ) ) 
+		PORTC_OUT |= STATE_B; // turns on LED connected to PORTC pin 1
+		
+	// Logic to Determine value of C (RED)
+	if( ( (D > 0.75) && (Y > 0.75) ) || ( (I >0.75) && (Z > 0.75) ) )
+		PORTC_OUT |= STATE_C; // turns on LED connected to PORTC pin 2
+		
+	flag = 0;				 // reset the flag to take next set of ADC samples when all calculations are done
+} // end of state logic function
+
+
+// Function to initialize ADC on PORTA
+void ADCA_Init()
+{
+	ADCA_CTRLA |= ADC_ENABLE_bm;																						// enables ADCA
+	ADCA_CTRLB = ADC_RESOLUTION_12BIT_gc;																				// set for 12 bit resolution
+	ADCA_REFCTRL = ADC_REFSEL_INTVCC_gc;																				// uses internal Vcc reference
+	ADCA_PRESCALER |= ADC_PRESCALER_DIV512_gc;																			// divides the clock by 512
+	ADCA_CH0_CTRL |= ADC_CH_INPUTMODE_SINGLEENDED_gc | ADC_CH_GAIN_1X_gc;												// single ended ADC mode and 1x gain
+	ADCA_CH0_MUXCTRL = ADC_CH_MUXPOS_PIN4_gc;																			// sets the pins to sample
+	ADCA_CH0_INTCTRL |= ADC_CH_INTLVL_HI_gc | ADC_CH_INTMODE_COMPLETE_gc;												// sets high priority interrupt upon completion
+	
+	ADCA_CH1_CTRL |= ADC_CH_INPUTMODE_SINGLEENDED_gc | ADC_CH_GAIN_1X_gc;												// single ended ADC mode and 1x gain
+	ADCA_CH1_MUXCTRL = ADC_CH_MUXPOS_PIN0_gc | ADC_CH_MUXPOS_PIN4_gc | ADC_CH_MUXPOS_PIN5_gc | ADC_CH_MUXPOS_PIN7_gc ;	// sets the pins to sample
+	ADCA_CH1_INTCTRL |= ADC_CH_INTLVL_HI_gc | ADC_CH_INTMODE_COMPLETE_gc;												// sets high priority interrupt upon completion
+	
+}
+
+
+// Function to initialize Timer0
+void Timer0_init()
+{
+	TCC0_PER = 0x1910;					// set the range of the counter
+	TCC0_INTCTRLA = PMIC_MEDLVLEN_bm;	// generate an interrupt when the timer overflows
+	TCC0_CTRLA = 0x06;					// set the timer prescaler
+}
+
+
+// MAIN Function
+int main(void)
+{
+	//Clocks Setup
+	unsigned long sClk, pClk;	// clock variables
+	SetSystemClock(CLK_SCLKSEL_RC32M_gc, CLK_PSADIV_1_gc, CLK_PSBCDIV_1_1_gc);	// set 32MHZ clock w/no prescaler
+	GetSystemClocks(&sClk, &pClk);	// get the clock parameters		
+	
+	
+	// Port Direction Setup
+	PORTC_DIR |= 0x07; // Enable to drive the off board LEDs
+	PORTC_OUT |= 0x00; // Turn off LEDs to start with if on
+	
+	// Timer0 and ADCA setup in main
+	cli();			// clears all interrupts
+	Timer0_init();	// initializes Timer0
+	ADCA_Init();	// initializes ADCA
+	PMIC.CTRL = PMIC_HILVLEN_bm | PMIC_MEDLVLEN_bm | PMIC_LOLVLEN_bm;	// turn on all interrupt levels
+	sei();			// turns on enabled interrupts
+	
+	/* Replace with your application code */
+	while (1)
+	{
+		if(fuzz_flag == 1)		// determines when to call the Fuzzification() based on flag value;
+		{
+			fuzz_flag = 0;		// reset the fuzz_flag
+			Fuzzification();	// call to the Fuzzification function	
+			State_Logic();		// after returning from Fuzzification function this function uses the Fuzz values to determine the state of inputs for LED control	
+		}
+	}
+}
+
+// *****************************************************************************************************************************************
