@@ -1,0 +1,35 @@
+
+ * ATXmegaB1 Xplained LED blinky example.c
+ * can also be used with the ATXMega A3BU
+ * Created: 9/2/19 9:05:00 AM
+ * Author : Johnathan Branch
+ * Purpose : Blinks an external LED connected to PIN 6 of PORTB using a user defined no-op wait function
+ * 
+ */ 
+
+#include <avr/io.h>
+
+#define CYCLES_PER_MS 2000 // number of instructions/sec performed by clock running at 2MHz
+
+void wait_ms(uint8_t time) {
+	
+	uint16_t cycles = time * CYCLES_PER_MS; // total number of clock cycles to needed to delay
+	
+	for(uint16_t i = 0; i < cycles; i++){
+		// do nothing throughout all the cycles
+	}
+	
+}
+
+int main() {
+
+	PORTB_DIR = 0x40; // sets PIN 6 of Port B as an output
+	PORTB_OUT |= 0xF0; // turns off LED(active low) connected to PortB[7-4](set HIGH)
+	
+	while (1) {
+		PORTB_OUT &= ~(0x40); // turns on LED(active low) connected to PortB6(set LOW)
+		wait_ms(250); // passes argument to the wait_ms(x) function to perform a (x) millisecond delay
+		PORTB_OUT |= 0x40; // turns off LED(active low) connected to PortB4\6(set HIGH)
+	}
+	return 0;
+}
